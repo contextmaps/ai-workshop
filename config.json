@@ -270,8 +270,7 @@
         { "id": "lecture_slides",          "label": "Lecture slides" },
         { "id": "existing_study_guide",    "label": "Existing study guide or summary" },
         { "id": "syllabus_or_schedule",    "label": "Course syllabus or weekly schedule" },
-        { "id": "starting_from_scratch",   "label": "I'm starting from scratch" },
-        { "id": "other",                   "label": "Other (describe briefly)" }
+        { "id": "starting_from_scratch",   "label": "I'm starting from scratch" }
       ]
     },
 
@@ -835,7 +834,14 @@
     "bridge_continue_label": "I'm back — share a reflection"
   },
 
-  "agent_url": "https://m365.cloud.microsoft/chat/?titleId=T_998d7363-2b19-70d2-a392-e7a970954a1e&source=embedded-builder",
-  "backend_url": "PLACEHOLDER_BACKEND_URL",
-  "prompt_variant": "agent"
+  "agent_url": "https://m365.cloud.microsoft/chat/?titleId=T_5d144e0f-ac7f-68fe-1c24-00da60290d29",
+  "form": {
+    "submission_url": "https://docs.google.com/forms/d/e/1FAIpQLSeewFWI-GYoESAL1-bskxx_vHoT47FrGOKTKT2wE1--XN3uLg/formResponse",
+    "entry_type": "entry.1945782144",
+    "entry_session_id": "entry.1409887469",
+    "entry_timestamp": "entry.1987234281",
+    "entry_payload": "entry.85212787"
+  },
+  "prompt_variant": "agent",
+  "suppress_header": true
 }
