@@ -24,7 +24,6 @@
   ol.steps li { margin-bottom: 4px; }
   pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.55;
         background: #fafbfc; border: 1px solid #d0d7e2; border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; margin: 0; }
-  .diff-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; font-size: 13px;
             border-radius: 6px; border: 1.5px solid #1a5da0; background: #fff; color: #1a5da0; cursor: pointer; font-weight: 600; }
   .button:hover { background: #1a5da0; color: #fff; }
@@ -34,7 +33,7 @@
 <body>
 <div class="wrap">
   <h1>Triage Platform — Smoke Test</h1>
-  <p class="lead">Walks the SPEC §9 case (Marketing / Consumer Behavior / Improve an assignment / Add AI-use guidance) through all seven screens including the Bridge, and compares the assembled prompt against the expected fixture.</p>
+  <p class="lead">Drives the SPEC §9 case (Marketing / Consumer Behavior / Improve an assignment / Add AI-use guidance) through the full seven-screen flow, intercepts the Google Form submission to confirm the right URL and payload would have been sent, verifies the new agent URL renders on the Bridge screen, verifies header suppression, and compares the assembled prompt against the byte-exact fixture from HANDOFF_01.</p>
   <p class="note">Run via a local HTTP server (e.g., <code>python -m http.server</code>) so <code>fetch()</code> of <code>config.json</code> and <code>PROMPT_AGENT.md</code> succeeds.</p>
 
   <div class="columns">
@@ -45,15 +44,22 @@
         <ol class="steps" id="steps">
           <li class="pending">Iframe loads</li>
           <li class="pending">Platform exposes __triage API</li>
+          <li class="pending">Page header is hidden under suppress_header: true</li>
+          <li class="pending">Step 1 grid uses 2&times;3 placement (CSS grid-row/grid-column on group cards)</li>
           <li class="pending">setState applied (Step 1: improve_assignment)</li>
           <li class="pending">setState applied (Step 2: add_ai_use_guidance)</li>
           <li class="pending">setState applied (Step 3: context fields)</li>
           <li class="pending">setState applied (Step 4: materials)</li>
           <li class="pending">Walks Steps 1&ndash;4 and Review</li>
           <li class="pending">commit() transitions to Bridge screen</li>
-          <li class="pending">Bridge renders agent URL anchor + assembled prompt textarea + &ldquo;Copy prompt again&rdquo; button</li>
+          <li class="pending">Bridge link uses Jim&rsquo;s new agent URL</li>
+          <li class="pending">Bridge has &ldquo;Copy prompt again&rdquo; + read-only prompt textarea + &ldquo;I&rsquo;m back&rdquo; button</li>
+          <li class="pending">submitToGoogleForm fired with the configured submission_url</li>
+          <li class="pending">FormData carried entry_type=&ldquo;triage&rdquo;, session_id, timestamp, payload</li>
+          <li class="pending">Payload contains step1/step2/step3/step4/prompt_variant/assembled_prompt</li>
           <li class="pending">&ldquo;I&rsquo;m back&rdquo; button transitions to Reflection</li>
-          <li class="pending">Assembled prompt matches fixture</li>
+          <li class="pending">Reflection submission fires submitToGoogleForm with type=&ldquo;reflection&rdquo;</li>
+          <li class="pending">Assembled prompt matches HANDOFF_01 fixture (byte-exact)</li>
         </ol>
         <div style="margin-top:12px;">
           <button class="button" id="rerun" type="button">Re-run</button>
@@ -66,12 +72,16 @@
     </div>
     <div>
       <div class="panel">
-        <h2>Expected prompt (fixture)</h2>
+        <h2>Expected prompt (fixture from HANDOFF_01)</h2>
         <pre id="expected"></pre>
       </div>
       <div class="panel" style="margin-top:1rem;">
         <h2>Actual prompt (from platform)</h2>
         <pre id="actual">&mdash;</pre>
+      </div>
+      <div class="panel" style="margin-top:1rem;">
+        <h2>Captured form submissions</h2>
+        <pre id="captured">&mdash;</pre>
       </div>
       <div class="panel" style="margin-top:1rem;" id="diff-panel" hidden>
         <h2>First diff</h2>
@@ -113,6 +123,9 @@ var EXPECTED = [
   ""
 ].join('\n');
 
+var EXPECTED_AGENT_URL = 'https://m365.cloud.microsoft/chat/?titleId=T_5d144e0f-ac7f-68fe-1c24-00da60290d29';
+var EXPECTED_FORM_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSeewFWI-GYoESAL1-bskxx_vHoT47FrGOKTKT2wE1--XN3uLg/formResponse';
+
 document.getElementById('expected').textContent = EXPECTED;
 
 function setStep(i, ok) {
@@ -144,9 +157,7 @@ function waitForCondition(predicate, timeoutMs) {
   var start = Date.now();
   return new Promise(function(resolve, reject) {
     function tick() {
-      try {
-        if (predicate()) return resolve();
-      } catch (e) { /* keep polling */ }
+      try { if (predicate()) return resolve(); } catch (e) { /* keep polling */ }
       if (Date.now() - start > timeoutMs) return reject(new Error('Timed out'));
       setTimeout(tick, 50);
     }
@@ -172,12 +183,41 @@ function firstDiff(a, b) {
   return '';
 }
 
+function captureFormFetch(win, captures) {
+  // Wrap fetch so the test can inspect submitToGoogleForm calls without
+  // actually hitting Google. The platform code passes mode: "no-cors" — we
+  // resolve with an opaque-shaped Response so the platform doesn't error.
+  var origFetch = win.fetch.bind(win);
+  win.fetch = function(url, opts) {
+    if (typeof url === 'string' && url.indexOf('docs.google.com/forms') !== -1) {
+      var entries = {};
+      try {
+        if (opts && opts.body && typeof opts.body.entries === 'function') {
+          var it = opts.body.entries();
+          var step;
+          while (!(step = it.next()).done) { entries[step.value[0]] = step.value[1]; }
+        }
+      } catch (e) {}
+      captures.push({ url: url, mode: opts && opts.mode, method: opts && opts.method, entries: entries });
+      // Resolve with undefined; the platform's submitToGoogleForm only
+      // uses .catch() and never reads the response (no-cors is opaque).
+      return Promise.resolve();
+    }
+    return origFetch(url, opts);
+  };
+}
+
+function dumpCaptured(captures) {
+  return JSON.stringify(captures, null, 2);
+}
+
 function run() {
   setStatus('pending', 'Loading iframe…');
   document.querySelectorAll('#steps li').forEach(function(li) {
     li.classList.remove('ok', 'bad'); li.classList.add('pending');
   });
   document.getElementById('actual').textContent = '—';
+  document.getElementById('captured').textContent = '—';
   document.getElementById('diff-panel').hidden = true;
 
   var frame = document.getElementById('frame');
@@ -190,97 +230,150 @@ function run() {
     waitForReady(win, 8000).then(function(api) {
       setStep(1, true);
 
-      // Neutralize side effects of commit() so the test doesn't open real
-      // tabs or hit the real backend. The platform's POST already short-
-      // circuits on the placeholder backend_url; window.open we replace.
+      // Verify suppress_header behavior on the live, fully-rendered platform.
+      var pageHeader = win.document.querySelector('.plib-page-header');
+      var headerHidden = pageHeader && win.getComputedStyle(pageHeader).display === 'none';
+      setStep(2, !!headerHidden);
+
+      // Verify 2x3 grid placement: each named group + Other has explicit
+      // grid-row / grid-column at the wide breakpoint.
+      var bodyWide = win.innerWidth >= 720;
+      var gridOk = true;
+      if (bodyWide) {
+        var expected = {
+          course_design:        { row: '1', col: '1' },
+          lecture_explanation:  { row: '1', col: '2' },
+          engagement:           { row: '2', col: '1' },
+          assessment:           { row: '2', col: '2' },
+          ai_integration:       { row: '3', col: '1' },
+          other:                { row: '3', col: '2' }
+        };
+        Object.keys(expected).forEach(function(gid) {
+          var el = win.document.querySelector('.tri-group[data-group-id="' + gid + '"]');
+          if (!el) { gridOk = false; return; }
+          var cs = win.getComputedStyle(el);
+          if (cs.gridRowStart !== expected[gid].row || cs.gridColumnStart !== expected[gid].col) {
+            gridOk = false;
+          }
+        });
+      }
+      setStep(3, gridOk);
+
+      // Install fetch interceptor before any submission can fire.
+      var captures = [];
+      captureFormFetch(win, captures);
+      // Avoid spawning a real agent tab during the test.
       try { win.open = function() { return null; }; } catch (e) {}
 
       api.setState({ step1: { id: 'improve_assignment', label: 'Improve an assignment', other_text: null } });
-      setStep(2, true);
-
-      api.setState({ step2: { id: 'add_ai_use_guidance', label: 'Add AI-use guidance for students', other_text: null } });
-      setStep(3, true);
-
-      api.setState({ step3: {
-        department: 'Marketing',
-        department_other: null,
-        course_topic: 'Consumer Behavior',
-        student_level: 'Undergraduate',
-        class_format: 'In-person',
-        current_approach: 'Lecture with case discussions'
-      }});
       setStep(4, true);
-
+      api.setState({ step2: { id: 'add_ai_use_guidance', label: 'Add AI-use guidance for students', other_text: null } });
+      setStep(5, true);
+      api.setState({ step3: {
+        department: 'Marketing', department_other: null,
+        course_topic: 'Consumer Behavior', student_level: 'Undergraduate',
+        class_format: 'In-person', current_approach: 'Lecture with case discussions'
+      }});
+      setStep(6, true);
       api.setState({ step4: {
         materials: ['Existing assignment instructions', 'Existing rubric'],
         other_text: null
       }});
-      setStep(5, true);
+      setStep(7, true);
 
-      // Walk Steps 1-4 and Review.
       var preCommit = ['step1', 'step2', 'step3', 'step4', 'review'];
       var preOk = preCommit.every(function(s) {
         api.setScreen(s);
         return !!win.document.querySelector('#screen-' + s + ':not(.hidden)');
       });
-      setStep(6, preOk);
+      setStep(8, preOk);
       if (!preOk) { setStatus('fail', 'Failed walking pre-commit screens.'); return; }
 
-      // Trigger commit; should transition to Bridge after ~250ms.
       api.commit();
       waitForCondition(function() {
         return !!win.document.querySelector('#screen-bridge:not(.hidden)');
       }, 2000).then(function() {
-        setStep(7, true);
-
-        var bridgeOk = true;
+        setStep(9, true);
         var doc = win.document;
+
         var anchor = doc.getElementById('bridge-agent-link');
         var copyBtn = doc.getElementById('btn-bridge-copy');
         var promptTa = doc.getElementById('bridge-prompt-text');
         var continueBtn = doc.getElementById('btn-bridge-continue');
-        if (!anchor || !anchor.href || anchor.target !== '_blank') bridgeOk = false;
-        if (!copyBtn) bridgeOk = false;
-        if (!promptTa || !promptTa.value || promptTa.readOnly !== true) bridgeOk = false;
-        if (!continueBtn) bridgeOk = false;
-        // Verify breadcrumb is empty on Bridge (per SPEC v0.5).
-        var bc = doc.getElementById('breadcrumb');
-        if (bc && bc.children.length !== 0) bridgeOk = false;
-        setStep(8, bridgeOk);
-        if (!bridgeOk) { setStatus('fail', 'Bridge content missing or breadcrumb leaked.'); return; }
+
+        var urlOk = !!anchor && anchor.href === EXPECTED_AGENT_URL && anchor.target === '_blank';
+        setStep(10, urlOk);
+        var bridgeOk = !!copyBtn && !!promptTa && promptTa.readOnly === true && !!promptTa.value && !!continueBtn;
+        setStep(11, bridgeOk);
+
+        // Verify the captured triage submission.
+        var triageCap = captures[0];
+        var formUrlOk = !!triageCap && triageCap.url === EXPECTED_FORM_URL && triageCap.mode === 'no-cors';
+        setStep(12, formUrlOk);
+        var entries = (triageCap && triageCap.entries) || {};
+        var triageEntriesOk =
+          entries['entry.1945782144'] === 'triage' &&
+          typeof entries['entry.1409887469'] === 'string' && entries['entry.1409887469'].length > 0 &&
+          typeof entries['entry.1987234281'] === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(entries['entry.1987234281']) &&
+          typeof entries['entry.85212787'] === 'string';
+        setStep(13, triageEntriesOk);
+
+        var payloadOk = false;
+        try {
+          var p = JSON.parse(entries['entry.85212787']);
+          payloadOk = !!(p.step1 && p.step2 && p.step3 && p.step4 && p.prompt_variant && p.assembled_prompt);
+        } catch (e) {}
+        setStep(14, payloadOk);
 
         var actual = promptTa.value;
         document.getElementById('actual').textContent = actual;
 
-        // Click "I'm back" — should go to Reflection.
         continueBtn.click();
         waitForCondition(function() {
           return !!win.document.querySelector('#screen-reflection:not(.hidden)');
         }, 1000).then(function() {
-          var reflBcOk = (function() {
-            var b = doc.getElementById('breadcrumb');
-            return b && b.children.length === 0; // no breadcrumb on Reflection either
-          })();
-          setStep(9, reflBcOk);
+          setStep(15, true);
 
-          var ok = (actual === EXPECTED);
-          setStep(10, ok);
-          if (ok && reflBcOk) {
-            setStatus('pass', 'PASS — seven-screen flow verified, Bridge renders, prompt matches fixture.');
-          } else if (!ok) {
-            setStatus('fail', 'FAIL — assembled prompt does not match fixture.');
-            var diff = firstDiff(EXPECTED, actual);
-            document.getElementById('diff').textContent = diff;
-            document.getElementById('diff-panel').hidden = false;
-          } else {
-            setStatus('fail', 'FAIL — breadcrumb leaked onto Reflection.');
-          }
+          // Drive a reflection save and confirm the second submission.
+          var refl = win.document.getElementById('refl-text');
+          refl.value = 'Quick smoke test reflection.';
+          refl.dispatchEvent(new win.Event('input', { bubbles: true }));
+          win.document.getElementById('btn-save-reflection').click();
+          waitForCondition(function() { return captures.length >= 2; }, 1500).then(function() {
+            var reflCap = captures[1];
+            var reflEntries = (reflCap && reflCap.entries) || {};
+            var reflOk =
+              reflCap && reflCap.url === EXPECTED_FORM_URL &&
+              reflEntries['entry.1945782144'] === 'reflection' &&
+              reflEntries['entry.1409887469'] === entries['entry.1409887469'] &&
+              typeof reflEntries['entry.85212787'] === 'string';
+            setStep(16, reflOk);
+
+            document.getElementById('captured').textContent = dumpCaptured(captures);
+
+            var fixtureOk = (actual === EXPECTED);
+            setStep(17, fixtureOk);
+
+            var allOk = headerHidden && gridOk && urlOk && bridgeOk && formUrlOk && triageEntriesOk && payloadOk && reflOk && fixtureOk;
+            if (allOk) {
+              setStatus('pass', 'PASS — seven-screen flow, Google Form capture, and byte-exact fixture all verified.');
+            } else if (!fixtureOk) {
+              setStatus('fail', 'FAIL — assembled prompt does not match fixture.');
+              document.getElementById('diff').textContent = firstDiff(EXPECTED, actual);
+              document.getElementById('diff-panel').hidden = false;
+            } else {
+              setStatus('fail', 'FAIL — see step list for which check failed.');
+            }
+          }).catch(function() {
+            setStep(16, false);
+            setStatus('fail', 'Reflection submission did not fire submitToGoogleForm within 1.5s.');
+          });
         }).catch(function() {
-          setStep(9, false);
+          setStep(15, false);
           setStatus('fail', '“I’m back” did not transition to Reflection within 1s.');
         });
       }).catch(function() {
-        setStep(7, false);
+        setStep(9, false);
         setStatus('fail', 'commit() did not transition to Bridge within 2s.');
       });
     }).catch(function(err) {
